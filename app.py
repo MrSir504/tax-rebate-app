@@ -25,6 +25,11 @@ def calculate_ra_rebate(income, contribution):
     return deductible, tax_rate, rebate
 
 # Streamlit interface
+# Center the logo using columns
+col1, col2, col3 = st.columns([1, 2, 1])  # Create three columns, middle one wider
+with col2:  # Place the logo in the middle column
+    st.image("logo.png", width=300)
+st.markdown("<br>", unsafe_allow_html=True)  # Add spacing
 st.title("South Africa RA Tax Rebate Calculator")
 st.write("Enter client details to calculate their tax rebate for retirement annuity contributions.")
 
