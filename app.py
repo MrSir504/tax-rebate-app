@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import io
@@ -100,6 +99,15 @@ UIF_ANNUAL_CAP = UIF_MONTHLY_CAP * 12  # R212,544
 # Medical Tax Credits (2025/2026)
 MTC_PER_PERSON = 364  # R364 per month for taxpayer and first dependant
 MTC_ADDITIONAL_DEPENDANT = 246  # R246 per month for each additional dependant
+# Estate Duty Rates (2025)
+ESTATE_DUTY_ABATEMENT = 3500000  # R3.5 million
+ESTATE_DUTY_RATE_1 = 0.20  # 20% up to R30 million
+ESTATE_DUTY_RATE_2 = 0.25  # 25% above R30 million
+ESTATE_DUTY_THRESHOLD = 30000000  # R30 million
+EXECUTOR_FEE_RATE = 0.035  # 3.5%
+VAT_RATE = 0.15  # 15%
+CGT_INCLUSION_RATE = 0.40  # 40% inclusion rate for individuals
+CGT_EXCLUSION_DEATH = 300000  # R300,000 exclusion in year of death
 
 # RA Tax Rebate Calculator Functions
 def get_tax_rate(income):
@@ -314,6 +322,47 @@ def calculate_retirement_plan(monthly_income, inflation_rate, annual_increase, y
 
     return future_annual_income, future_monthly_income, capital_required, years_until_depletion, withdrawal_at_retirement
 
+# Estate Liquidity Tool Functions
+def calculate_estate_duty(net_value, has_surviving_spouse, spouse_bequest_value, pbo_bequest_value):
+    """Calculate estate duty based on net estate value and deductions."""
+    # Apply Section 4q deduction (spouse bequest) and Section 18A (PBO bequest)
+    dutiable_value = max(0, net_value - spouse_bequest_value - pbo_bequest_value)
+    # Apply R3.5 million abatement
+    dutiable_value = max(0, dutiable_value - ESTATE_DUTY_ABATEMENT)
+    
+    if dutiable_value <= 0:
+        return 0
+    if dutiable_value <= ESTATE_DUTY_THRESHOLD:
+        estate_duty = dutiable_value * ESTATE_DUTY_RATE_1
+    else:
+        estate_duty = (ESTATE_DUTY_THRESHOLD * ESTATE_DUTY_RATE_1) + ((dutiable_value - ESTATE_DUTY_THRESHOLD) * ESTATE_DUTY_RATE_2)
+    
+    if has_surviving_spouse:
+        # Note that estate duty is deferred until second spouse's death
+        return 0
+    return estate_duty
+
+def calculate_cgt(assets, marginal_tax_rate):
+    """Calculate Capital Gains Tax on assets at death."""
+    total_gain = 0
+    for asset in assets:
+        gain = max(0, asset["market_value"] - asset["base_cost"])
+        total_gain += gain
+    
+    # Apply R300,000 exclusion in year of death
+    taxable_gain = max(0, total_gain - CGT_EXCLUSION_DEATH)
+    # Apply inclusion rate
+    taxable_amount = taxable_gain * CGT_INCLUSION_RATE
+    # Apply marginal tax rate
+    cgt = taxable_amount * marginal_tax_rate
+    return cgt
+
+def calculate_executor_fees(gross_value):
+    """Calculate executor's fees based on gross estate value."""
+    base_fee = gross_value * EXECUTOR_FEE_RATE
+    total_fee = base_fee * (1 + VAT_RATE)  # Add 15% VAT
+    return total_fee
+
 # Streamlit interface
 # Center the logo using columns
 col1, col2, col3 = st.columns([1, 2, 1])
@@ -325,7 +374,7 @@ st.title("Navigate Wealth Financial Tools")
 st.markdown("<p style='text-align: center; color: #CCCCCC;'>Powered by Navigate Wealth</p>", unsafe_allow_html=True)
 
 # Tool selection dropdown
-tool_options = ["Select a Tool", "Budget Tool", "RA Tax Rebate Calculator", "Retirement Calculator", "Salary Tax Calculator"]
+tool_options = ["Select a Tool", "Budget Tool", "RA Tax Rebate Calculator", "Retirement Calculator", "Salary Tax Calculator", "Estate Liquidity Tool"]
 selected_tool = st.selectbox("Choose a Financial Tool:", tool_options)
 
 # Display the selected tool's interface
@@ -636,203 +685,275 @@ elif selected_tool == "Retirement Calculator":
         else:
             try:
                 years_to_retirement = retirement_age - current_age
-                # Calculate future income and capital requirements
+                # Step 1: Calculate future income needed
                 future_annual_income, future_monthly_income, capital_required, years_until_depletion, withdrawal_at_retirement = calculate_retirement_plan(
-                    desired_monthly_income, inflation_rate, desired_annual_increase, years_to_retirement,
-                    preserve_capital, preservation_years, assumed_return
+                    desired_monthly_income, inflation_rate, desired_annual_increase, years_to_retirement, preserve_capital, preservation_years, assumed_return
                 )
-
-                # Calculate future value of provisions
-                total_future_value = 0
-                provisions_summary = []
+                # Step 2: Calculate future value of current provisions
+                total_provision_value = 0
+                provisions_data = []
                 average_return = 0
+                total_weight = 0
                 for provision in provisions:
-                    future_value = calculate_future_value(
+                    fv = calculate_future_value(
                         provision["current_value"],
                         provision["annual_return"],
                         years_to_retirement,
                         provision["monthly_contribution"],
                         provision["contribution_increase"]
                     )
-                    total_future_value += future_value
-                    average_return += provision["annual_return"]
-                    provisions_summary.append({
-                        "Provision Type": provision["type"],
+                    total_provision_value += fv
+                    provisions_data.append({
+                        "Type": provision["type"],
                         "Current Value (R)": provision["current_value"],
-                        "Assumed Annual Return (%)": provision["annual_return"] * 100,
+                        "Annual Return (%)": provision["annual_return"] * 100,
                         "Monthly Contribution (R)": provision["monthly_contribution"],
                         "Annual Contribution Increase (%)": provision["contribution_increase"] * 100,
-                        "Future Value at Retirement (R)": future_value
+                        "Future Value at Retirement (R)": fv
                     })
-                average_return = average_return / len(provisions) if provisions else 0
+                    # Weighted average return for additional savings calculation
+                    weight = provision["current_value"] + (provision["monthly_contribution"] * 12 * years_to_retirement)
+                    average_return += provision["annual_return"] * weight
+                    total_weight += weight
+                if total_weight > 0:
+                    average_return /= total_weight
 
-                # Additional calculations based on preservation choice
-                shortfall_surplus = None
-                shortfall_percentage = None
-                additional_monthly_savings = None
-                capital_over_time = None
-                withdrawals_over_time = None
-                monthly_income_over_time = None
-                monthly_income_today_value = None
-
-                if preserve_capital:
-                    shortfall_surplus = total_future_value - capital_required
-                    shortfall_percentage = (shortfall_surplus / capital_required) * 100 if capital_required > 0 else 0
-                    if shortfall_surplus < 0:
-                        additional_monthly_savings = calculate_additional_savings_needed(
-                            abs(shortfall_surplus), years_to_retirement, average_return
-                        )
-                else:
-                    years_until_depletion, withdrawal_at_retirement, capital_over_time, withdrawals_over_time, monthly_income_over_time, monthly_income_today_value = calculate_years_until_depletion(
-                        total_future_value, future_annual_income, inflation_rate, years_to_retirement, assumed_return
-                    )
-
-                # Display summary
-                st.success("--- Retirement Plan Summary ---")
-                st.write(f"**Client**: {name}")
-                st.write(f"**Current Age**: {current_age}")
-                st.write(f"**Retirement Age**: {retirement_age}")
-                st.write(f"**Years to Retirement**: {years_to_retirement}")
-                st.write(f"**Desired Monthly Income at Retirement (Today’s Value)**: R {desired_monthly_income:,.2f}")
-                st.write(f"**Desired Annual Income at Retirement (Today’s Value)**: R {desired_monthly_income * 12:,.2f}")
-                st.write(f"**Future Monthly Income Needed (Adjusted)**: R {future_monthly_income:,.2f}")
-                st.write(f"**Future Annual Income Needed (Adjusted)**: R {future_annual_income:,.2f}")
-                st.write(f"**Inflation Rate**: {inflation_rate * 100:.1f}%")
-                st.write(f"**Desired Annual Income Increase**: {desired_annual_increase * 100:.1f}%")
-                st.write(f"**Assumed Annual Return After Retirement**: {assumed_return * 100:.1f}%")
-                if preserve_capital:
-                    st.write(f"**Preserve Capital for**: {preservation_years} years")
-                st.write("**Provisions Breakdown**:")
-                for provision in provisions_summary:
-                    st.write(f"- {provision['Provision Type']}: R {provision['Future Value at Retirement (R)']:,.2f}")
-                st.write(f"**Total Future Value of Provisions**: R {total_future_value:,.2f}")
-
+                # Step 3: Calculate shortfall or excess
                 summary_data = {
                     "Client": [name],
                     "Current Age": [current_age],
                     "Retirement Age": [retirement_age],
                     "Years to Retirement": [years_to_retirement],
-                    "Desired Monthly Income (Today’s Value) (R)": [desired_monthly_income],
-                    "Desired Annual Income (Today’s Value) (R)": [desired_monthly_income * 12],
-                    "Future Monthly Income Needed (R)": [future_monthly_income],
+                    "Desired Monthly Income at Retirement (R)": [desired_monthly_income],
                     "Future Annual Income Needed (R)": [future_annual_income],
-                    "Inflation Rate (%)": [inflation_rate * 100],
-                    "Desired Annual Income Increase (%)": [desired_annual_increase * 100],
-                    "Assumed Annual Return After Retirement (%)": [assumed_return * 100],
-                    "Preserve Capital": ["Yes" if preserve_capital else "No"],
-                    "Total Future Value of Provisions (R)": [total_future_value]
+                    "Future Monthly Income Needed (R)": [future_monthly_income]
                 }
+                st.success("--- Retirement Plan Summary ---")
+                st.write(f"**Client**: {name}")
+                st.write(f"**Current Age**: {current_age}")
+                st.write(f"**Retirement Age**: {retirement_age}")
+                st.write(f"**Years to Retirement**: {years_to_retirement}")
+                st.write(f"**Desired Monthly Income at Retirement (Today's Value)**: R {desired_monthly_income:,.2f}")
+                st.write(f"**Future Annual Income Needed (Inflation Adjusted)**: R {future_annual_income:,.2f}")
+                st.write(f"**Future Monthly Income Needed (Inflation Adjusted)**: R {future_monthly_income:,.2f}")
+
+                # Display provisions
+                st.write("**Provisions at Retirement**:")
+                provisions_df = pd.DataFrame(provisions_data)
+                st.write(provisions_df)
+                st.write(f"**Total Future Value of Provisions**: R {total_provision_value:,.2f}")
+                summary_data["Total Future Value of Provisions (R)"] = [total_provision_value]
 
                 if preserve_capital:
-                    st.write(f"**Capital Required at Retirement**: R {capital_required:,.2f}")
-                    if shortfall_surplus >= 0:
-                        st.write(f"**Excess**: R {shortfall_surplus:,.2f}")
-                        st.write(f"**Excess Percentage**: {shortfall_percentage:.1f}%")
-                    else:
-                        st.write(f"**Shortfall**: R {abs(shortfall_surplus):,.2f}")
-                        st.write(f"**Shortfall Percentage**: {abs(shortfall_percentage):,.1f}%")
-                        st.write(f"**Additional Monthly Savings Needed**: R {additional_monthly_savings:,.2f}")
-                        st.warning("Consider increasing contributions to meet your retirement goals.")
-                    st.markdown(
-                        "<p style='font-size: 14px; font-style: italic; color: #CCCCCC;'>Note: High inflation and annual income increase rates can significantly inflate future income needs. Consider adjusting these assumptions if the results seem unrealistic.</p>",
-                        unsafe_allow_html=True
-                    )
+                    shortfall = capital_required - total_provision_value
+                    st.write(f"**Capital Required at Retirement (Preserve Capital)**: R {capital_required:,.2f}")
                     summary_data["Capital Required at Retirement (R)"] = [capital_required]
-                    summary_data["Shortfall/Excess (R)"] = [shortfall_surplus]
-                    summary_data["Shortfall/Excess Percentage (%)"] = [shortfall_percentage]
-                    summary_data["Additional Monthly Savings Needed (R)"] = [additional_monthly_savings if shortfall_surplus < 0 else 0]
+                    summary_data["Preserve Capital"] = ["Yes"]
+                    summary_data["Preservation Period (Years)"] = [preservation_years]
+                    st.write(f"**Initial Withdrawal at Retirement (Annual)**: R {withdrawal_at_retirement:,.2f}")
+                    st.write(f"**Initial Withdrawal at Retirement (Monthly)**: R {(withdrawal_at_retirement / 12):,.2f}")
+                    summary_data["Initial Withdrawal at Retirement (Annual) (R)"] = [withdrawal_at_retirement]
+                    summary_data["Initial Withdrawal at Retirement (Monthly) (R)"] = [withdrawal_at_retirement / 12]
                 else:
-                    st.write(f"**Withdrawal at Retirement (Annual)**: R {withdrawal_at_retirement:,.2f}")
-                    monthly_withdrawal = withdrawal_at_retirement / 12
-                    st.write(f"**Withdrawal at Retirement (Monthly)**: R {monthly_withdrawal:,.2f}")
+                    # Calculate how long the capital will last
+                    years_until_depletion, first_withdrawal, capital_over_time, withdrawals_over_time, monthly_income_over_time, monthly_income_today_value = calculate_years_until_depletion(
+                        total_provision_value, future_annual_income, inflation_rate, years_to_retirement, assumed_return
+                    )
+                    st.write(f"**Capital at Retirement (Based on Provisions)**: R {total_provision_value:,.2f}")
                     st.write(f"**Years Until Capital Depletion**: {years_until_depletion}")
-                    if years_until_depletion < 25:  # Assuming 25 years as a reasonable life expectancy post-retirement
-                        st.warning("Your capital may deplete sooner than expected. Consider preserving capital or increasing savings.")
-                    summary_data["Withdrawal at Retirement (Annual) (R)"] = [withdrawal_at_retirement]
-                    summary_data["Withdrawal at Retirement (Monthly) (R)"] = [monthly_withdrawal]
+                    st.write(f"**Initial Withdrawal at Retirement (Annual)**: R {first_withdrawal:,.2f}")
+                    st.write(f"**Initial Withdrawal at Retirement (Monthly)**: R {(first_withdrawal / 12):,.2f}")
+                    summary_data["Capital at Retirement (R)"] = [total_provision_value]
                     summary_data["Years Until Capital Depletion"] = [years_until_depletion]
-
-                    # Visual: Two line charts
-                    # First chart: Capital and Annual Income
-                    st.write("**Capital and Annual Income Depletion Over Time**")
-                    chart_data_1 = pd.DataFrame({
-                        "Year": list(range(len(capital_over_time))),
+                    summary_data["Initial Withdrawal at Retirement (Annual) (R)"] = [first_withdrawal]
+                    summary_data["Initial Withdrawal at Retirement (Monthly) (R)"] = [first_withdrawal / 12]
+                    summary_data["Preserve Capital"] = ["No"]
+                    summary_data["Preservation Period (Years)"] = [0]
+                    # Visual: Line chart for capital depletion
+                    st.write("**Capital Depletion Over Time**")
+                    chart_data = pd.DataFrame({
+                        "Year": list(range(years_to_retirement, years_to_retirement + len(capital_over_time))),
                         "Capital (R)": capital_over_time,
-                        "Annual Income (R)": withdrawals_over_time
-                    })
-                    st.line_chart(chart_data_1.set_index("Year"))
-
-                    # Second chart: Monthly Income and Monthly Income in Today's Value
-                    st.write("**Monthly Income Depletion Over Time**")
-                    chart_data_2 = pd.DataFrame({
-                        "Year": list(range(len(capital_over_time))),
+                        "Annual Withdrawal (R)": withdrawals_over_time,
                         "Monthly Income (R)": monthly_income_over_time,
-                        "Monthly Income (Today's Value) (R)": monthly_income_today_value
+                        "Monthly Income in Today's Value (R)": monthly_income_today_value
                     })
-                    st.line_chart(chart_data_2.set_index("Year"))
+                    st.line_chart(chart_data.set_index("Year")[["Capital (R)", "Annual Withdrawal (R)", "Monthly Income (R)", "Monthly Income in Today's Value (R)"]])
 
-                # Visual: Bar chart for capital comparison
-                st.write("**Capital Comparison Visualization**")
-                if preserve_capital:
-                    chart_data = pd.DataFrame({
-                        "Category": ["Capital Required", "Projected Capital"],
-                        "Amount (R)": [capital_required, total_future_value]
-                    })
-                else:
-                    chart_data = pd.DataFrame({
-                        "Category": ["Projected Capital"],
-                        "Amount (R)": [total_future_value]
-                    })
-                st.bar_chart(chart_data.set_index("Category"))
+                # Step 4: Calculate additional savings needed
+                if preserve_capital and shortfall > 0:
+                    additional_savings = calculate_additional_savings_needed(shortfall, years_to_retirement, average_return)
+                    st.warning(f"**Capital Shortfall**: R {shortfall:,.2f}")
+                    st.write(f"**Additional Monthly Savings Needed**: R {additional_savings:,.2f}")
+                    summary_data["Capital Shortfall (R)"] = [shortfall]
+                    summary_data["Additional Monthly Savings Needed (R)"] = [additional_savings]
+                elif preserve_capital and shortfall <= 0:
+                    st.write(f"**Capital Excess**: R {-shortfall:,.2f}")
+                    summary_data["Capital Excess (R)"] = [-shortfall]
+                    summary_data["Capital Shortfall (R)"] = [0]
+                    summary_data["Additional Monthly Savings Needed (R)"] = [0]
 
                 # Export to Excel
                 summary_df = pd.DataFrame(summary_data)
-                provisions_df = pd.DataFrame(provisions_summary)
-                chart_df = pd.DataFrame(chart_data).reset_index()
+                chart_df = pd.DataFrame(chart_data).reset_index() if not preserve_capital else pd.DataFrame()
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-                    summary_df.to_excel(writer, index=False, sheet_name="Retirement Summary")
-                    provisions_df.to_excel(writer, startrow=len(summary_df) + 2, index=False, sheet_name="Retirement Summary")
-                    chart_df.to_excel(writer, index=False, sheet_name="Chart Comparison", startrow=0)
-                    instructions_data = [
-                        "This Excel file contains your Retirement Summary and Chart Data.",
-                        "To recreate the bar chart in Excel (if applicable):",
-                        "1. Go to the 'Chart Comparison' sheet.",
-                        "2. Select the 'Category' and 'Amount (R)' columns.",
-                        "3. Click Insert > Bar Chart in Excel to visualize the capital comparison."
-                    ]
+                    summary_df.to_excel(writer, index=False, sheet_name="Retirement Plan Summary")
+                    provisions_df.to_excel(writer, startrow=len(summary_df) + 2, index=False, sheet_name="Retirement Plan Summary")
                     if not preserve_capital:
-                        depletion_df_1 = pd.DataFrame({
-                            "Year": list(range(len(capital_over_time))),
-                            "Capital (R)": capital_over_time,
-                            "Annual Income (R)": withdrawals_over_time
-                        })
-                        depletion_df_2 = pd.DataFrame({
-                            "Year": list(range(len(capital_over_time))),
-                            "Monthly Income (R)": monthly_income_over_time,
-                            "Monthly Income (Today's Value) (R)": monthly_income_today_value
-                        })
-                        depletion_df_1.to_excel(writer, index=False, sheet_name="Depletion Capital Annual", startrow=0)
-                        depletion_df_2.to_excel(writer, index=False, sheet_name="Depletion Monthly", startrow=0)
-                        instructions_data.extend([
-                            "If 'Preserve Capital' is not selected, you can also recreate the depletion charts:",
-                            "1. Go to the 'Depletion Capital Annual' sheet.",
-                            "2. Select the 'Year', 'Capital (R)', and 'Annual Income (R)' columns.",
-                            "3. Click Insert > Line Chart in Excel to visualize the capital and annual income depletion.",
-                            "4. Go to the 'Depletion Monthly' sheet.",
-                            "5. Select the 'Year', 'Monthly Income (R)', and 'Monthly Income (Today's Value) (R)' columns.",
-                            "6. Click Insert > Line Chart in Excel to visualize the monthly income depletion."
-                        ])
-                    instructions = pd.DataFrame({"Instructions": instructions_data})
+                        chart_df.to_excel(writer, index=False, sheet_name="Chart Data", startrow=0)
+                    # Add a note sheet for chart instructions
+                    instructions = pd.DataFrame({
+                        "Instructions": [
+                            "This Excel file contains your Retirement Plan Summary and Provisions Data.",
+                            "If you did not opt to preserve capital, the 'Chart Data' sheet includes data for visualizing capital depletion over time.",
+                            "To recreate the line chart in Excel (if applicable):",
+                            "1. Go to the 'Chart Data' sheet.",
+                            "2. Select the 'Year' and 'Capital (R)' columns (or other metrics).",
+                            "3. Click Insert > Line Chart in Excel to visualize the depletion."
+                        ]
+                    })
                     instructions.to_excel(writer, index=False, sheet_name="Instructions")
                 buffer.seek(0)
                 st.download_button(
                     label="Download Summary as Excel",
                     data=buffer,
-                    file_name="retirement_summary.xlsx",
+                    file_name="retirement_plan_summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             except Exception as e:
                 st.error(f"Error: {e}")
-else:
-    st.write("This tool is coming soon! Contact the Navigate Wealth team to suggest new tools.")
+elif selected_tool == "Estate Liquidity Tool":
+    st.write("Enter details to assess your estate's liquidity and ensure your beneficiaries are protected.")
+    # Note about estate duty rates
+    st.markdown(
+        "<p style='font-size: 14px; font-style: italic; color: #CCCCCC;'>Note: Estate duty rates are based on 2025 South African laws: R3.5M abatement, 20% up to R30M, 25% above R30M. Verify with a tax professional for your specific case.</p>",
+        unsafe_allow_html=True
+    )
+
+    # Input fields
+    name = st.text_input("Client's Name", key="estate_name")
+    
+    # Personal Details
+    marital_status = st.selectbox("Marital Status", ["Single", "Married in Community of Property", "Married Out of Community (No Accrual)", "Married Out of Community (With Accrual)"])
+    has_surviving_spouse = st.checkbox("Is there a surviving spouse?", value=False)
+
+    # Assets
+    st.write("**Liquid Assets**")
+    cash = st.number_input("Cash in Bank/Savings (R)", min_value=0.0, step=1000.0)
+    life_insurance_to_estate = st.number_input("Life Insurance Payable to Estate (R)", min_value=0.0, step=1000.0)
+
+    st.write("**Non-Liquid Assets**")
+    num_properties = st.number_input("Number of Properties", min_value=0, max_value=10, step=1, value=0)
+    properties = []
+    for i in range(num_properties):
+        st.write(f"**Property {i+1}**")
+        market_value = st.number_input(f"Market Value of Property {i+1} (R)", min_value=0.0, step=1000.0, key=f"prop_value_{i}")
+        properties.append(market_value)
+
+    num_investments = st.number_input("Number of Investments (e.g., Shares, Bonds)", min_value=0, max_value=10, step=1, value=0)
+    investments = []
+    for i in range(num_investments):
+        st.write(f"**Investment {i+1}**")
+        market_value = st.number_input(f"Market Value of Investment {i+1} (R)", min_value=0.0, step=1000.0, key=f"inv_value_{i}")
+        base_cost = st.number_input(f"Base Cost of Investment {i+1} (R)", min_value=0.0, step=1000.0, key=f"inv_base_{i}")
+        investments.append({"market_value": market_value, "base_cost": base_cost})
+
+    other_assets = st.number_input("Other Non-Liquid Assets (e.g., Vehicles, Jewelry) (R)", min_value=0.0, step=1000.0)
+
+    # Liabilities
+    st.write("**Liabilities**")
+    debts = st.number_input("Outstanding Debts (e.g., Loans, Bonds) (R)", min_value=0.0, step=1000.0)
+    medical_bills = st.number_input("Medical Bills or Pre-Death Expenses (R)", min_value=0.0, step=1000.0)
+
+    # Will Details
+    st.write("**Will Details**")
+    cash_bequests = st.number_input("Cash Bequests to Beneficiaries (R)", min_value=0.0, step=1000.0)
+    spouse_bequest_value = st.number_input("Bequests to Surviving Spouse (R)", min_value=0.0, step=1000.0, disabled=not has_surviving_spouse)
+    pbo_bequest_value = st.number_input("Bequests to Public Benefit Organizations (R)", min_value=0.0, step=1000.0)
+
+    # Assumptions
+    st.write("**Assumptions**")
+    marginal_tax_rate = st.number_input("Marginal Tax Rate for CGT (e.g., 0.45 for 45%)", min_value=0.0, max_value=0.45, value=0.45, step=0.01)
+
+    # Calculate button
+    if st.button("Calculate Estate Liquidity"):
+        if not name.strip():
+            st.error("Please enter a name.")
+        elif cash < 0 or life_insurance_to_estate < 0 or any(p < 0 for p in properties) or any(i["market_value"] < 0 or i["base_cost"] < 0 for i in investments) or other_assets < 0 or debts < 0 or medical_bills < 0 or cash_bequests < 0 or spouse_bequest_value < 0 or pbo_bequest_value < 0 or marginal_tax_rate < 0 or marginal_tax_rate > 0.45:
+            st.error("All financial inputs must be non-negative, and marginal tax rate must be between 0 and 45%.")
+        else:
+            try:
+                # Calculate Gross Estate Value
+                gross_estate = cash + life_insurance_to_estate + sum(properties) + sum(i["market_value"] for i in investments) + other_assets
+
+                # Calculate Net Estate Value
+                net_estate = gross_estate - debts - medical_bills - cash_bequests
+
+                # Calculate Capital Gains Tax
+                cgt = calculate_cgt(investments, marginal_tax_rate)
+
+                # Calculate Estate Duty
+                estate_duty = calculate_estate_duty(net_estate, has_surviving_spouse, spouse_bequest_value, pbo_bequest_value)
+
+                # Calculate Executor Fees
+                executor_fees = calculate_executor_fees(gross_estate)
+
+                # Calculate Total Costs
+                total_costs = cgt + estate_duty + executor_fees
+
+                # Calculate Liquid Assets Available
+                liquid_assets = cash + life_insurance_to_estate
+
+                # Assess Liquidity
+                liquidity_shortfall = max(0, total_costs - liquid_assets)
+
+                st.success("--- Estate Liquidity Summary ---")
+                st.write(f"**Client**: {name}")
+                st.write(f"**Gross Estate Value**: R {gross_estate:,.2f}")
+                st.write(f"**Net Estate Value (after debts, medical bills, and cash bequests)**: R {net_estate:,.2f}")
+                st.write(f"**Capital Gains Tax**: R {cgt:,.2f}")
+                st.write(f"**Estate Duty**: R {estate_duty:,.2f}")
+                st.write(f"**Executor Fees (incl. VAT)**: R {executor_fees:,.2f}")
+                st.write(f"**Total Costs**: R {total_costs:,.2f}")
+                st.write(f"**Liquid Assets Available**: R {liquid_assets:,.2f}")
+                if liquidity_shortfall > 0:
+                    st.warning(f"**Liquidity Shortfall**: R {liquidity_shortfall:,.2f}")
+                    st.write("**Recommendation**: Consider increasing life insurance payable to the estate or liquidating non-liquid assets to cover the shortfall.")
+                else:
+                    st.write("**Liquidity Status**: Sufficient liquid assets to cover costs.")
+
+                # Export to Excel
+                summary_data = {
+                    "Client": [name],
+                    "Gross Estate Value (R)": [gross_estate],
+                    "Net Estate Value (R)": [net_estate],
+                    "Capital Gains Tax (R)": [cgt],
+                    "Estate Duty (R)": [estate_duty],
+                    "Executor Fees (R)": [executor_fees],
+                    "Total Costs (R)": [total_costs],
+                    "Liquid Assets Available (R)": [liquid_assets],
+                    "Liquidity Shortfall (R)": [liquidity_shortfall if liquidity_shortfall > 0 else 0]
+                }
+                summary_df = pd.DataFrame(summary_data)
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+                    summary_df.to_excel(writer, index=False, sheet_name="Estate Liquidity Summary")
+                    # Add a note sheet for instructions
+                    instructions = pd.DataFrame({
+                        "Instructions": [
+                            "This Excel file contains your Estate Liquidity Summary.",
+                            "There are no charts in this tool, but you can create your own in Excel.",
+                            "For example, select your data and use Insert > Chart to visualize your results."
+                        ]
+                    })
+                    instructions.to_excel(writer, index=False, sheet_name="Instructions")
+                buffer.seek(0)
+                st.download_button(
+                    label="Download Summary as Excel",
+                    data=buffer,
+                    file_name="estate_liquidity_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.error(f"Error: {e}")
