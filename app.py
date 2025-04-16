@@ -670,6 +670,11 @@ elif selected_tool == "Retirement Calculator":
                 shortfall_surplus = None
                 shortfall_percentage = None
                 additional_monthly_savings = None
+                capital_over_time = None
+                withdrawals_over_time = None
+                monthly_income_over_time = None
+                monthly_income_today_value = None
+
                 if preserve_capital:
                     shortfall_surplus = total_future_value - capital_required
                     shortfall_percentage = (shortfall_surplus / capital_required) * 100 if capital_required > 0 else 0
@@ -784,31 +789,32 @@ elif selected_tool == "Retirement Calculator":
                 summary_df = pd.DataFrame(summary_data)
                 provisions_df = pd.DataFrame(provisions_summary)
                 chart_df = pd.DataFrame(chart_data).reset_index()
-                depletion_df_1 = pd.DataFrame({
-                    "Year": list(range(len(capital_over_time))),
-                    "Capital (R)": capital_over_time,
-                    "Annual Income (R)": withdrawals_over_time if not preserve_capital else []
-                })
-                depletion_df_2 = pd.DataFrame({
-                    "Year": list(range(len(capital_over_time))),
-                    "Monthly Income (R)": monthly_income_over_time if not preserve_capital else [],
-                    "Monthly Income (Today's Value) (R)": monthly_income_today_value if not preserve_capital else []
-                })
                 buffer = io.BytesIO()
                 with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
                     summary_df.to_excel(writer, index=False, sheet_name="Retirement Summary")
                     provisions_df.to_excel(writer, startrow=len(summary_df) + 2, index=False, sheet_name="Retirement Summary")
+                    chart_df.to_excel(writer, index=False, sheet_name="Chart Comparison", startrow=0)
+                    instructions_data = [
+                        "This Excel file contains your Retirement Summary and Chart Data.",
+                        "To recreate the bar chart in Excel (if applicable):",
+                        "1. Go to the 'Chart Comparison' sheet.",
+                        "2. Select the 'Category' and 'Amount (R)' columns.",
+                        "3. Click Insert > Bar Chart in Excel to visualize the capital comparison."
+                    ]
                     if not preserve_capital:
+                        depletion_df_1 = pd.DataFrame({
+                            "Year": list(range(len(capital_over_time))),
+                            "Capital (R)": capital_over_time,
+                            "Annual Income (R)": withdrawals_over_time
+                        })
+                        depletion_df_2 = pd.DataFrame({
+                            "Year": list(range(len(capital_over_time))),
+                            "Monthly Income (R)": monthly_income_over_time,
+                            "Monthly Income (Today's Value) (R)": monthly_income_today_value
+                        })
                         depletion_df_1.to_excel(writer, index=False, sheet_name="Depletion Capital Annual", startrow=0)
                         depletion_df_2.to_excel(writer, index=False, sheet_name="Depletion Monthly", startrow=0)
-                    chart_df.to_excel(writer, index=False, sheet_name="Chart Comparison", startrow=0)
-                    instructions = pd.DataFrame({
-                        "Instructions": [
-                            "This Excel file contains your Retirement Summary and Chart Data.",
-                            "To recreate the bar chart in Excel (if applicable):",
-                            "1. Go to the 'Chart Comparison' sheet.",
-                            "2. Select the 'Category' and 'Amount (R)' columns.",
-                            "3. Click Insert > Bar Chart in Excel to visualize the capital comparison.",
+                        instructions_data.extend([
                             "If 'Preserve Capital' is not selected, you can also recreate the depletion charts:",
                             "1. Go to the 'Depletion Capital Annual' sheet.",
                             "2. Select the 'Year', 'Capital (R)', and 'Annual Income (R)' columns.",
@@ -816,8 +822,8 @@ elif selected_tool == "Retirement Calculator":
                             "4. Go to the 'Depletion Monthly' sheet.",
                             "5. Select the 'Year', 'Monthly Income (R)', and 'Monthly Income (Today's Value) (R)' columns.",
                             "6. Click Insert > Line Chart in Excel to visualize the monthly income depletion."
-                        ]
-                    })
+                        ])
+                    instructions = pd.DataFrame({"Instructions": instructions_data})
                     instructions.to_excel(writer, index=False, sheet_name="Instructions")
                 buffer.seek(0)
                 st.download_button(
